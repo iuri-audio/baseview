@@ -175,44 +175,52 @@ impl AncestorVisibilityState {
         }
     }
 
-    pub fn window_destroyed(&self, window_id: NonZeroU32, connection: &X11Connection) {
+    /// Returns `true` if this operation made our own window visible.
+    pub fn window_destroyed(&self, window_id: NonZeroU32, connection: &X11Connection) -> bool {
         let Self::Parented { ancestry, .. } = &self else {
-            return;
+            return false;
         };
 
         if !ancestry.remove_window(window_id) {
-            return;
+            return false;
         }
 
-        self.regenerate_from_last_window(connection);
+        self.regenerate_from_last_window(connection)
     }
 
+    /// Returns `true` if this operation made our own window visible.
     pub fn window_reparented(
         &self, window_id: NonZeroU32, new_parent: Option<NonZeroU32>, connection: &X11Connection,
-    ) {
+    ) -> bool {
         let Self::Parented { ancestry, root_id, .. } = &self else {
-            return;
+            return false;
         };
 
         if !ancestry.remove_after_window(window_id) {
-            return;
+            return false;
         }
 
         if let Some(new_parent) = new_parent {
             if Some(new_parent) == root_id.get() {
-                return;
+                return false;
             }
 
             ancestry.push(Ancestor { id: new_parent, mapped: Cell::new(false) });
 
-            self.regenerate_from_last_window(connection);
+            return self.regenerate_from_last_window(connection);
         }
+
+        false
     }
 
-    pub fn regenerate_from_last_window(&self, connection: &X11Connection) {
+    /// Returns `true` if this operation made our own window visible.
+    pub fn regenerate_from_last_window(&self, connection: &X11Connection) -> bool {
+        let was_viewable = self.own_window_is_viewable();
         if let Err(e) = self.try_regenerate_from_last_window(connection) {
             crate::warn!("Failed to generate window ancestry list: {}", e)
         }
+
+        !was_viewable && self.own_window_is_viewable()
     }
 
     fn try_regenerate_from_last_window(
@@ -228,6 +236,24 @@ impl AncestorVisibilityState {
         let mut rechecked_children = Vec::new();
 
         loop {
+            // Register for the window's structure events before reading its map state, so a map
+            // between the two can't be missed: it shows up either in the state or as an event.
+            let mut registered = true;
+            if ancestry.own_window_id().is_some_and(|id| id != current_window) {
+                // Despite what's documented, all windows down the parent tree must have the event mask
+                // bit set, otherwise events are not propagated through to us.
+                if let Err(e) =
+                    connection.register_tree_structure_events_for_window(current_window)?.check()
+                {
+                    crate::warn!(
+                        "Could not register SubstructureNotify event for window {}: {}",
+                        current_window,
+                        e
+                    );
+                    registered = false;
+                }
+            }
+
             let Some((mut mapped, tree)) = fetch_window_info(connection, current_window)? else {
                 // We got a BadWindow while trying to get a window's info, it must have been destroyed.
                 // Try to go back a layer and fetch the window's state and parent again
@@ -288,19 +314,8 @@ impl AncestorVisibilityState {
                 }
             }
 
-            if ancestry.own_window_id().is_some_and(|id| id != current_window) {
-                // Despite what's documented, all windows down the parent tree must have the event mask
-                // bit set, otherwise events are not propagated through to us.
-                if let Err(e) =
-                    connection.register_tree_structure_events_for_window(current_window)?.check()
-                {
-                    crate::warn!(
-                        "Could not register SubstructureNotify event for window {}: {}",
-                        current_window,
-                        e
-                    );
-                    mapped = true; // Assume it is mapped, since we'll possibly not get any events from this window
-                }
+            if !registered {
+                mapped = true; // Assume it is mapped, since we'll possibly not get any events from this window
             }
 
             // All checks succeeded, now register the current window info and fetch info from the parent

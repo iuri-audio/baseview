@@ -153,6 +153,19 @@ impl EventLoop {
         Ok(())
     }
 
+    /// Starts drawing frames once our own window has become viewable.
+    fn start_drawing(&mut self) -> Result<(), FatalError> {
+        if self.window.xcb_window.present_supported()
+            && self.window.xcb_window.present_select_input()?
+        {
+            self.window.present_notify_requested.set(true);
+        } else {
+            self.setup_fallback_frame_timer()?;
+        }
+
+        Ok(())
+    }
+
     fn handle_redraw(&mut self) {
         if !self.draw_now {
             return;
@@ -567,13 +580,7 @@ impl EventLoop {
                     let became_viewable = self.window.visibility_state.window_mapped(window_id);
 
                     if became_viewable {
-                        if self.window.xcb_window.present_supported()
-                            && self.window.xcb_window.present_select_input()?
-                        {
-                            self.window.present_notify_requested.set(true);
-                        } else {
-                            self.setup_fallback_frame_timer()?;
-                        }
+                        self.start_drawing()?;
                     }
                 }
             }
@@ -590,19 +597,27 @@ impl EventLoop {
 
             XEvent::ReparentNotify(e) => {
                 if let Some(window_id) = NonZero::new(e.window) {
-                    self.window.visibility_state.window_reparented(
+                    // Reparenting can make our window viewable without a MapNotify: the new
+                    // ancestors may have been mapped already.
+                    if self.window.visibility_state.window_reparented(
                         window_id,
                         NonZero::new(e.parent),
                         &self.window.connection,
-                    )
+                    ) {
+                        self.start_drawing()?;
+                    }
                 }
             }
 
             XEvent::DestroyNotify(e) => {
                 if let Some(window_id) = NonZero::new(e.window) {
-                    self.window
+                    if self
+                        .window
                         .visibility_state
                         .window_destroyed(window_id, &self.window.connection)
+                    {
+                        self.start_drawing()?;
+                    }
                 }
             }
 
