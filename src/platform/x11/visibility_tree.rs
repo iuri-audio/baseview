@@ -175,52 +175,44 @@ impl AncestorVisibilityState {
         }
     }
 
-    /// Returns `true` if this operation made our own window visible.
-    pub fn window_destroyed(&self, window_id: NonZeroU32, connection: &X11Connection) -> bool {
+    pub fn window_destroyed(&self, window_id: NonZeroU32, connection: &X11Connection) {
         let Self::Parented { ancestry, .. } = &self else {
-            return false;
+            return;
         };
 
         if !ancestry.remove_window(window_id) {
-            return false;
+            return;
         }
 
-        self.regenerate_from_last_window(connection)
+        self.regenerate_from_last_window(connection);
     }
 
-    /// Returns `true` if this operation made our own window visible.
     pub fn window_reparented(
         &self, window_id: NonZeroU32, new_parent: Option<NonZeroU32>, connection: &X11Connection,
-    ) -> bool {
+    ) {
         let Self::Parented { ancestry, root_id, .. } = &self else {
-            return false;
+            return;
         };
 
         if !ancestry.remove_after_window(window_id) {
-            return false;
+            return;
         }
 
         if let Some(new_parent) = new_parent {
             if Some(new_parent) == root_id.get() {
-                return false;
+                return;
             }
 
             ancestry.push(Ancestor { id: new_parent, mapped: Cell::new(false) });
 
-            return self.regenerate_from_last_window(connection);
+            self.regenerate_from_last_window(connection);
         }
-
-        false
     }
 
-    /// Returns `true` if this operation made our own window visible.
-    pub fn regenerate_from_last_window(&self, connection: &X11Connection) -> bool {
-        let was_viewable = self.own_window_is_viewable();
+    pub fn regenerate_from_last_window(&self, connection: &X11Connection) {
         if let Err(e) = self.try_regenerate_from_last_window(connection) {
             crate::warn!("Failed to generate window ancestry list: {}", e)
         }
-
-        !was_viewable && self.own_window_is_viewable()
     }
 
     fn try_regenerate_from_last_window(

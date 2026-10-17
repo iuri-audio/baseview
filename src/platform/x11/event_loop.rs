@@ -54,6 +54,8 @@ pub(crate) struct EventLoop {
     new_size: Option<PhysicalSize<u16>>,
     new_parent_size: Option<PhysicalSize<u16>>,
     draw_now: bool,
+    /// Whether our own window was viewable when the event loop last went idle.
+    was_viewable: bool,
     last_requested_serial: Option<u32>,
     last_received_present: Option<(u32, u64)>,
 
@@ -100,6 +102,7 @@ impl EventLoop {
             new_size: None,
             new_parent_size: None,
             draw_now: false,
+            was_viewable: false,
             last_requested_serial: None,
             last_received_present: None,
             drag_n_drop: DragNDropState::NoCurrentSession,
@@ -153,8 +156,16 @@ impl EventLoop {
         Ok(())
     }
 
-    /// Starts drawing frames once our own window has become viewable.
-    fn start_drawing(&mut self) -> Result<(), FatalError> {
+    /// Starts drawing frames if our own window has become viewable since the event loop last went
+    /// idle, whichever way it did: a MapNotify, a reparent, a destroyed ancestor or a Show request.
+    fn start_drawing_if_viewable(&mut self) -> Result<(), FatalError> {
+        let viewable = self.window.visibility_state.own_window_is_viewable();
+        let became_viewable = viewable && !self.was_viewable;
+        self.was_viewable = viewable;
+        if !became_viewable {
+            return Ok(());
+        }
+
         if self.window.xcb_window.present_supported()
             && self.window.xcb_window.present_select_input()?
         {
@@ -373,6 +384,7 @@ impl EventLoop {
 
         loop {
             self.handle_coalesced_resize_events()?;
+            self.start_drawing_if_viewable()?;
             self.handle_redraw();
             self.handle_present_notify()?;
 
@@ -577,11 +589,7 @@ impl EventLoop {
                         self.window.is_mapped.set(true);
                     }
 
-                    let became_viewable = self.window.visibility_state.window_mapped(window_id);
-
-                    if became_viewable {
-                        self.start_drawing()?;
-                    }
+                    self.window.visibility_state.window_mapped(window_id);
                 }
             }
 
@@ -597,27 +605,19 @@ impl EventLoop {
 
             XEvent::ReparentNotify(e) => {
                 if let Some(window_id) = NonZero::new(e.window) {
-                    // Reparenting can make our window viewable without a MapNotify: the new
-                    // ancestors may have been mapped already.
-                    if self.window.visibility_state.window_reparented(
+                    self.window.visibility_state.window_reparented(
                         window_id,
                         NonZero::new(e.parent),
                         &self.window.connection,
-                    ) {
-                        self.start_drawing()?;
-                    }
+                    );
                 }
             }
 
             XEvent::DestroyNotify(e) => {
                 if let Some(window_id) = NonZero::new(e.window) {
-                    if self
-                        .window
+                    self.window
                         .visibility_state
-                        .window_destroyed(window_id, &self.window.connection)
-                    {
-                        self.start_drawing()?;
-                    }
+                        .window_destroyed(window_id, &self.window.connection);
                 }
             }
 
