@@ -115,6 +115,14 @@ impl AncestorVisibilityState {
         }
     }
 
+    /// Marks our own window viewable, when the server says it is.
+    pub fn mark_viewable(&self) {
+        match self {
+            Self::Parented { own_window_viewable, .. } => own_window_viewable.set(true),
+            Self::Floating { own_window_viewable, .. } => own_window_viewable.set(true),
+        }
+    }
+
     pub fn parent_id(&self) -> Option<NonZeroU32> {
         match self {
             Self::Parented { ancestry, .. } => ancestry.parent_id(),

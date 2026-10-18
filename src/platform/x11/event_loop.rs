@@ -21,6 +21,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 use x11rb::protocol::present::CompleteKind;
+use x11rb::protocol::xproto::{ConnectionExt as _, MapState};
 use x11rb::protocol::Event as XEvent;
 
 pub struct MainThreadCaller {
@@ -165,6 +166,12 @@ impl EventLoop {
         if !became_viewable {
             return Ok(());
         }
+
+        // A PresentNotifyMSC sent before we selected its completion event, such as on an Expose
+        // before the window was viewable, is never answered, and no other is sent until it is.
+        // Start the chain afresh.
+        self.last_requested_serial = None;
+        self.last_received_present = None;
 
         if self.window.xcb_window.present_supported()
             && self.window.xcb_window.present_select_input()?
@@ -497,6 +504,19 @@ impl EventLoop {
             }
 
             XEvent::Expose(e) if e.window == self.window.raw_id() => {
+                // The server only exposes a viewable window, but the ancestor tracking can miss a
+                // map. Ask the server, which knows.
+                if !self.window.visibility_state.own_window_is_viewable()
+                    && self
+                        .window
+                        .connection
+                        .conn
+                        .get_window_attributes(self.window.raw_id())?
+                        .reply()
+                        .is_ok_and(|attributes| attributes.map_state == MapState::VIEWABLE)
+                {
+                    self.window.visibility_state.mark_viewable();
+                }
                 self.window.present_notify_requested.set(true)
             }
 
